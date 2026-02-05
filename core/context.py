@@ -40,8 +40,9 @@ class LogContext:
                         可以创建多个不同的 logger 实例，写入不同的日志文件
                         例如: "my.app", "my.database", "my.api" 等
             log_file: 日志文件路径（可选），例如: "logs/my_module.log"
-                     如果指定，将为此 logger 动态创建独立的文件 handler
-                     如果不指定，使用配置文件中的默认 handler
+                     - 如果指定，将使用指定的文件路径
+                     - 如果不指定且 logger_name 在预配置中，使用配置文件中的 handler
+                     - 如果不指定且 logger_name 不在预配置中，自动创建 {logger_name}.log
             when: 日志轮转时间单位，默认 'D' (按天)
                  可选值: 'S'(秒), 'M'(分), 'H'(小时), 'D'(天), 'W0'-'W6'(周几), 'midnight'(午夜)
             interval: 轮转间隔，默认 1（配合 when 使用，如 when='D', interval=1 表示每天轮转）
@@ -50,17 +51,23 @@ class LogContext:
             use_gzip: 是否压缩备份文件，默认 False
 
         使用示例:
-            # 使用默认配置
+            # 使用默认配置（my.custom）
             logger1 = LogContext()
 
-            # 指定 logger 名称，使用配置文件中的 handler
-            logger2 = LogContext("api")
+            # 使用预配置的 logger（如 "test"），日志写入 test.log
+            logger2 = LogContext("test")
 
-            # 指定独立的日志文件，使用默认轮转配置
-            logger3 = LogContext("my_module", log_file="logs/my_module.log")
+            # 使用预配置 logger 的子 logger，日志传播到父级
+            logger3 = LogContext("test.structured")  # → 写入 test.log
+
+            # 使用未预配置的名称，自动创建 api.log
+            logger4 = LogContext("api")  # → 自动创建 logs/api.log
+
+            # 显式指定日志文件路径
+            logger5 = LogContext("my_module", log_file="logs/my_module.log")
 
             # 自定义轮转配置：每小时轮转，保留7个备份，启用压缩
-            logger4 = LogContext(
+            logger6 = LogContext(
                 "hourly_logger",
                 log_file="logs/hourly.log",
                 when='H',
@@ -73,10 +80,22 @@ class LogContext:
         self.logger = structlog.get_logger(logger_name)
         self.logger_name = logger_name
 
-        # 如果指定了 log_file，动态创建 handler
+        # 判断是否需要创建文件 handler
+        configured_loggers = set(LOGGING_CONFIG.get('loggers', {}).keys())
+
         if log_file:
+            # 用户显式指定了日志文件
             self._setup_file_handler(
                 logger_name, log_file, when, interval, backup_count, max_bytes, use_gzip
+            )
+        elif not self._is_logger_configured(logger_name, configured_loggers):
+            # logger_name 不在预配置中，自动创建 {logger_name}.log
+            log_dir = LOGGING_CONFIG.get('log_dir', 'logs')
+            # 将 logger_name 中的点替换为下划线，避免文件名问题
+            safe_name = logger_name.replace('.', '_')
+            auto_log_file = os.path.join(log_dir, f"{safe_name}.log")
+            self._setup_file_handler(
+                logger_name, auto_log_file, when, interval, backup_count, max_bytes, use_gzip
             )
 
         # 🔥 使用 contextvars 绑定服务信息（支持线程传递）
@@ -85,6 +104,30 @@ class LogContext:
             "environment": LOGGING_CONFIG.get("environment", "prd")
         }
         structlog.contextvars.bind_contextvars(service=service_info)
+
+    def _is_logger_configured(self, logger_name: str, configured_loggers: set) -> bool:
+        """检查 logger_name 是否在预配置中（包括作为子 logger）
+
+        Args:
+            logger_name: 要检查的 logger 名称
+            configured_loggers: 已配置的 logger 名称集合
+
+        Returns:
+            bool: 如果 logger_name 或其父级在配置中则返回 True
+        """
+        # 精确匹配
+        if logger_name in configured_loggers:
+            return True
+
+        # 检查是否是已配置 logger 的子 logger
+        # 例如 "test.structured" 是 "test" 的子 logger
+        parts = logger_name.split('.')
+        for i in range(len(parts) - 1, 0, -1):
+            parent_name = '.'.join(parts[:i])
+            if parent_name in configured_loggers:
+                return True
+
+        return False
 
     def _setup_file_handler(
         self,
@@ -107,8 +150,17 @@ class LogContext:
             max_bytes: 单个日志文件最大字节数
             use_gzip: 是否压缩备份文件
         """
-        import logging.config
-        from concurrent_log_handler import ConcurrentTimedRotatingFileHandler
+        import logging
+        from .handlers import OrganizedFileHandler
+
+        # 从配置获取目录设置
+        config_log_dir = LOGGING_CONFIG.get('log_dir', 'logs')
+        archive_subdir = LOGGING_CONFIG.get('archive_subdir', 'archive')
+        lock_subdir = LOGGING_CONFIG.get('lock_subdir', '.locks')
+
+        # 计算归档和锁文件目录路径
+        archive_dir = os.path.join(config_log_dir, archive_subdir)
+        lock_dir = os.path.join(config_log_dir, lock_subdir)
 
         # 确保日志目录存在
         log_dir = os.path.dirname(log_file)
@@ -124,8 +176,8 @@ class LogContext:
                 # 已存在，不重复添加
                 return
 
-        # 创建文件 handler（使用传入的配置参数）
-        file_handler = ConcurrentTimedRotatingFileHandler(
+        # 创建文件 handler（使用 OrganizedFileHandler）
+        file_handler = OrganizedFileHandler(
             filename=log_file,
             when=when,
             interval=interval,
@@ -133,6 +185,8 @@ class LogContext:
             maxBytes=max_bytes,
             encoding='utf-8',
             use_gzip=use_gzip,
+            archive_dir=archive_dir,
+            lock_dir=lock_dir,
         )
 
         # 创建格式化器
@@ -146,10 +200,7 @@ class LogContext:
         std_logger.propagate = False
 
         # 同时添加错误日志 handler（写入统一的 error.log）
-        error_log_file = 'logs/error.log'
-        error_dir = os.path.dirname(error_log_file)
-        if error_dir and not os.path.exists(error_dir):
-            os.makedirs(error_dir, exist_ok=True)
+        error_log_file = os.path.join(config_log_dir, 'error.log')
 
         # 检查是否已有 error handler
         has_error_handler = False
@@ -159,7 +210,7 @@ class LogContext:
                 break
 
         if not has_error_handler:
-            error_handler = ConcurrentTimedRotatingFileHandler(
+            error_handler = OrganizedFileHandler(
                 filename=error_log_file,
                 when='D',
                 interval=1,
@@ -167,6 +218,8 @@ class LogContext:
                 maxBytes=200 * 1024 * 1024,
                 encoding='utf-8',
                 use_gzip=False,
+                archive_dir=archive_dir,
+                lock_dir=lock_dir,
             )
             error_formatter = logging.Formatter(
                 '[%(asctime)s][%(filename)s][%(lineno)s][%(levelname)s][%(thread)d] - %(message)s'
