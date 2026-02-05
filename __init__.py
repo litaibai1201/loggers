@@ -44,3 +44,7 @@ __all__ = [
     "flask_hooks",
     "FlaskHooksRegister",
 ]
+
+# 在所有模块导入完成后初始化日志系统
+# 此时 loggers.core.handlers 已可被 logging.config.dictConfig 解析
+configure_logger()

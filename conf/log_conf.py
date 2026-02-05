@@ -1,96 +1,94 @@
 # -*- coding: utf-8 -*-
 """
 @文件: log_conf.py
-@说明: 日志系统配置
+@说明: 日志系统配置 - 从 YAML 配置文件加载
 @时间: 2024
 """
+import os
+from typing import Any, Dict
 
-LOGGING_CONFIG = {
-    # 服务配置
-    'service_name': 'AIML_DATASET_SERVICE',
-    'environment': 'prd',  # dev, test, prd
+import yaml
 
-    # 队列处理器配置 (用于 AsyncIO 和高并发场景)
-    # 设置为 True 启用非阻塞日志记录，推荐用于:
-    # - FastAPI/AsyncIO 应用
-    # - 高并发 Flask 应用
-    # 设置为 False 使用传统方式，推荐用于:
-    # - 多进程应用 (Gunicorn with multiple workers)
-    # - 低并发 CLI 工具
-    'use_queue_handler': False,
 
-    # 队列大小 (-1 表示无限制)
-    'queue_size': -1,
+def _get_config_path() -> str:
+    """获取配置文件路径"""
+    # 默认配置文件路径（与本文件同目录）
+    default_path = os.path.join(os.path.dirname(__file__), 'logging.yaml')
 
-    # 日志配置
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'simple_msg': {
-            'format': '%(message)s'
+    # 支持通过环境变量指定配置文件路径
+    return os.environ.get('LOGGERS_CONFIG_PATH', default_path)
+
+
+def _load_yaml_config() -> Dict[str, Any]:
+    """从 YAML 文件加载配置"""
+    config_path = _get_config_path()
+
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"日志配置文件不存在: {config_path}")
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+def _build_logging_config(yaml_config: Dict[str, Any]) -> Dict[str, Any]:
+    """将 YAML 配置转换为 logging.config.dictConfig 格式"""
+
+    # 基础配置
+    config = {
+        'service_name': yaml_config.get('service_name', 'DEFAULT_SERVICE'),
+        'environment': yaml_config.get('environment', 'dev'),
+        'use_queue_handler': yaml_config.get('use_queue_handler', False),
+        'queue_size': yaml_config.get('queue_size', -1),
+        'log_dir': yaml_config.get('log_dir', 'logs'),
+        'archive_subdir': yaml_config.get('archive_subdir', 'archive'),
+        'lock_subdir': yaml_config.get('lock_subdir', '.locks'),
+        'max_backup_count': yaml_config.get('max_backup_count', 7),
+
+        # logging.config.dictConfig 必需的配置
+        'version': 1,
+        'disable_existing_loggers': False,
+
+        # 格式化器
+        'formatters': {
+            'simple_msg': {
+                'format': '%(message)s'
+            },
+            'basic_format': {
+                'format': '[%(asctime)s][%(filename)s][%(lineno)s][%(levelname)s][%(thread)d] - %(message)s'
+            },
         },
-        'basic_format': {
-            'format': '[%(asctime)s][%(filename)s][%(lineno)s][%(levelname)s][%(thread)d] - %(message)s'
-        },
-    },
-    'handlers': {
-        # 默认应用日志
-        'file_handler': {
-            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
-            'formatter': 'simple_msg',
-            'level': 'DEBUG',
-            'filename': 'logs/myapp.log',
-            'when': 'D',
-            'interval': 1,
-            'backupCount': 14,
-            'maxBytes': 200 * 1024 * 1024,
-            'encoding': 'utf-8',
-            'use_gzip': False,
-        },
-        # 错误日志
-        'error_file_handler': {
-            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
-            'formatter': 'basic_format',
-            'level': 'ERROR',
-            'filename': 'logs/error.log',
-            'when': 'D',
-            'interval': 1,
-            'backupCount': 7,
-            'maxBytes': 200 * 1024 * 1024,
-            'encoding': 'utf-8',
-            'use_gzip': False,
-        },
-        # 测试日志
-        'test_handler': {
-            'class': 'concurrent_log_handler.ConcurrentTimedRotatingFileHandler',
-            'formatter': 'simple_msg',
-            'level': 'DEBUG',
-            'filename': 'logs/test.log',
-            'when': 'D',
-            'interval': 1,
-            'backupCount': 7,
-            'maxBytes': 200 * 1024 * 1024,
-            'encoding': 'utf-8',
-            'use_gzip': False,
-        },
-    },
-    'loggers': {
-        # 默认 logger
-        'my.custom': {
-            'handlers': ['file_handler', 'error_file_handler'],
-            'level': 'DEBUG',
-            'propagate': False,
-        },
-        'my.custom.error': {
-            'handlers': ['error_file_handler'],
-            'level': 'ERROR',
-            'propagate': False,
-        },
-        # 测试日志
-        'test': {
-            'handlers': ['test_handler', 'error_file_handler'],
-            'level': 'DEBUG',
-            'propagate': False,
-        }
+
+        'handlers': {},
+        'loggers': {},
     }
-}
+
+    # 构建 handlers
+    yaml_handlers = yaml_config.get('handlers', {})
+    for handler_name, handler_conf in yaml_handlers.items():
+        config['handlers'][handler_name] = {
+            'class': 'loggers.core.handlers.OrganizedFileHandler',
+            'formatter': handler_conf.get('formatter', 'simple_msg'),
+            'level': handler_conf.get('level', 'DEBUG'),
+            'filename': handler_conf.get('filename'),
+            'when': handler_conf.get('when', 'D'),
+            'interval': handler_conf.get('interval', 1),
+            'maxBytes': handler_conf.get('max_bytes', 200 * 1024 * 1024),
+            'encoding': handler_conf.get('encoding', 'utf-8'),
+            'use_gzip': handler_conf.get('use_gzip', False),
+        }
+
+    # 构建 loggers
+    yaml_loggers = yaml_config.get('loggers', {})
+    for logger_name, logger_conf in yaml_loggers.items():
+        config['loggers'][logger_name] = {
+            'handlers': logger_conf.get('handlers', []),
+            'level': logger_conf.get('level', 'DEBUG'),
+            'propagate': logger_conf.get('propagate', False),
+        }
+
+    return config
+
+
+# 加载配置
+_yaml_config = _load_yaml_config()
+LOGGING_CONFIG = _build_logging_config(_yaml_config)

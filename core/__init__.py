@@ -1,5 +1,6 @@
 from .logger import configure_logger, LoggerConfig
 from .context import LogContext, logger
+from .handlers import OrganizedFileHandler
 from .models import (
     LogModel,
     ServiceModel,
@@ -16,6 +17,7 @@ __all__ = [
     "LoggerConfig",
     "LogContext",
     "logger",
+    "OrganizedFileHandler",
     "LogModel",
     "ServiceModel",
     "TraceModel",

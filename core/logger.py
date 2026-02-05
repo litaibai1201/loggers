@@ -83,8 +83,11 @@ def configure_logger(use_queue_handler: Optional[bool] = None):
     # 确保日志目录存在
     _ensure_log_directories()
 
+    # 准备配置（注入目录设置到处理器）
+    config = _prepare_logging_config()
+
     # 配置标准日志处理器
-    logging.config.dictConfig(LOGGING_CONFIG)
+    logging.config.dictConfig(config)
 
     # 判断是否启用队列处理器
     if use_queue_handler is None:
@@ -118,15 +121,76 @@ def configure_logger(use_queue_handler: Optional[bool] = None):
     )
 
 
+def _prepare_logging_config() -> Dict[str, Any]:
+    """准备日志配置，注入目录设置到处理器
+
+    Returns:
+        修改后的日志配置字典
+    """
+    import copy
+    config = copy.deepcopy(LOGGING_CONFIG)
+
+    # 获取目录配置
+    log_dir = config.get('log_dir', 'logs')
+    archive_subdir = config.get('archive_subdir', 'archive')
+    lock_subdir = config.get('lock_subdir', '.locks')
+    max_backup_count = config.get('max_backup_count', 14)
+
+    # 计算完整路径
+    archive_dir_path = os.path.join(log_dir, archive_subdir)
+    lock_dir_path = os.path.join(log_dir, lock_subdir)
+
+    # 注入目录配置到处理器
+    handlers = config.get('handlers', {})
+    for handler_name, handler_config in handlers.items():
+        # 处理使用 OrganizedFileHandler 的处理器
+        if 'OrganizedFileHandler' in handler_config.get('class', ''):
+            # 拼接完整的文件路径（log_dir + filename）
+            if 'filename' in handler_config:
+                filename = handler_config['filename']
+                # 如果 filename 不包含目录，则拼接 log_dir
+                if not os.path.dirname(filename):
+                    handler_config['filename'] = os.path.join(log_dir, filename)
+            # 添加归档目录配置
+            handler_config['archive_dir'] = archive_dir_path
+            # 添加锁文件目录配置
+            handler_config['lock_dir'] = lock_dir_path
+            # 使用全局配置的备份数量（如果处理器没有单独设置）
+            if 'backupCount' not in handler_config:
+                handler_config['backupCount'] = max_backup_count
+
+    return config
+
+
 def _ensure_log_directories():
-    """确保所有日志文件的目录都存在"""
+    """确保所有日志目录都存在（包括归档目录和锁文件目录）"""
+    # 获取配置的目录
+    log_dir = LOGGING_CONFIG.get('log_dir', 'logs')
+    archive_subdir = LOGGING_CONFIG.get('archive_subdir', 'archive')
+    lock_subdir = LOGGING_CONFIG.get('lock_subdir', '.locks')
+
+    # 创建主日志目录
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
+    # 创建归档目录
+    archive_dir = os.path.join(log_dir, archive_subdir)
+    if not os.path.exists(archive_dir):
+        os.makedirs(archive_dir, exist_ok=True)
+
+    # 创建锁文件目录
+    lock_dir = os.path.join(log_dir, lock_subdir)
+    if not os.path.exists(lock_dir):
+        os.makedirs(lock_dir, exist_ok=True)
+
+    # 确保 handler 配置中的目录也存在
     handlers = LOGGING_CONFIG.get("handlers", {})
     for _handler_name, handler_config in handlers.items():
         if "filename" in handler_config:
             log_file = handler_config["filename"]
-            log_dir = os.path.dirname(log_file)
-            if log_dir and not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
+            file_dir = os.path.dirname(log_file)
+            if file_dir and not os.path.exists(file_dir):
+                os.makedirs(file_dir, exist_ok=True)
 
 
 def _is_asyncio_environment() -> bool:
@@ -248,5 +312,3 @@ def get_queue_handler_status() -> Dict[str, Any]:
     }
 
 
-# 在模块加载时自动初始化日志系统
-configure_logger()
