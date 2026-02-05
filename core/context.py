@@ -8,15 +8,16 @@ from typing import Any, Dict, Literal, Optional
 import structlog
 import uuid
 import os
+import contextvars
+import threading
+from functools import wraps
 
 from ..conf.log_conf import LOGGING_CONFIG
-from .stack_parser import StackTraceParser
-from .models import (
-    HTTPRequestModel,
-    HTTPResponseModel,
-    DatabaseModel,
-    ErrorModel
-)
+from .models import ErrorModel, HTTPRequestModel, HTTPResponseModel, DatabaseModel
+
+# 线程上下文传播相关的全局变量
+_original_thread_init = threading.Thread.__init__
+_propagation_enabled = False
 
 
 class LogContext:
@@ -236,6 +237,61 @@ class LogContext:
             "environment": LOGGING_CONFIG.get("environment", "prd")
         }
         structlog.contextvars.bind_contextvars(service=service_info)
+
+    # ==================== 线程上下文传播 ====================
+
+    def enable_propagation(self) -> None:
+        """启用线程上下文自动传播
+
+        调用后，所有通过 threading.Thread 创建的子线程都会自动继承
+        父线程的 contextvars 上下文（包括 trace_id、transaction_id 等）。
+
+        使用示例：
+            from loggers import logger
+
+            logger.enable_propagation()
+
+            def api_handler():
+                logger.set_trace_id("req-123")
+                # 子线程自动继承 trace_id
+                threading.Thread(target=background_task).start()
+        """
+        global _propagation_enabled
+        if not _propagation_enabled:
+            threading.Thread.__init__ = self._context_aware_thread_init
+            _propagation_enabled = True
+
+    def disable_propagation(self) -> None:
+        """禁用线程上下文自动传播"""
+        global _propagation_enabled
+        if _propagation_enabled:
+            threading.Thread.__init__ = _original_thread_init
+            _propagation_enabled = False
+
+    def is_propagation_enabled(self) -> bool:
+        """检查线程上下文传播是否已启用"""
+        return _propagation_enabled
+
+    @staticmethod
+    def _context_aware_thread_init(self_thread, *args, **kwargs):
+        """支持 contextvars 的 Thread.__init__ 包装器"""
+        ctx = contextvars.copy_context()
+        target = kwargs.get('target') or (args[1] if len(args) > 1 else None)
+
+        if target is not None:
+            @wraps(target)
+            def wrapped_target(*target_args, **target_kwargs):
+                return ctx.run(target, *target_args, **target_kwargs)
+
+            if 'target' in kwargs:
+                kwargs['target'] = wrapped_target
+            else:
+                args = list(args)
+                if len(args) > 1:
+                    args[1] = wrapped_target
+                args = tuple(args)
+
+        _original_thread_init(self_thread, *args, **kwargs)
 
     def info(
         self,
@@ -505,43 +561,28 @@ class LogContext:
         self._log("debug", message, **log_kwargs)
 
     def _format_error(self, error: Any) -> Optional[Dict[str, Any]]:
-        """智能格式化错误信息（支持多种输入类型）
-
-        Args:
-            error: 错误信息，支持以下类型：
-                  - None: 返回 None
-                  - Exception对象: 自动获取堆栈并格式化
-                  - str: traceback文本，使用format_traceback_string处理
-                  - dict: 已格式化的错误字典，直接返回
-                  - ErrorModel: pydantic模型，转为字典
-
-        Returns:
-            格式化后的错误字典，或 None
-        """
+        """格式化错误信息"""
         if error is None:
             return None
 
-        # 情况1: 已经是ErrorModel (pydantic模型)
         if isinstance(error, ErrorModel):
             return error.model_dump(exclude_none=True)
 
-        # 情况2: 已经是字典 (可能是手动构造的)
         if isinstance(error, dict):
             return error
 
-        # 情况3: Exception对象 - 使用format_for_elk
         if isinstance(error, BaseException):
-            return StackTraceParser.format_for_elk(error)
+            import traceback
+            return {
+                "message": str(error),
+                "error_type": type(error).__name__,
+                "stack_trace": traceback.format_exc()
+            }
 
-        # 情况4: 字符串 (traceback.format_exc()的结果)
         if isinstance(error, str):
-            return StackTraceParser.format_traceback_string(error)
+            return {"message": error}
 
-        # 其他类型: 尝试转为字符串
-        try:
-            return {"message": str(error), "error_type": type(error).__name__}
-        except Exception:
-            return {"message": "Unknown error", "error_type": "UnknownError"}
+        return {"message": str(error), "error_type": type(error).__name__}
 
     def _log(self, level: str, message: str, **kwargs) -> None:
         """根据级别输出日志（自动注入公共字段，防御性设计）

@@ -19,11 +19,8 @@
 """
 import json
 import time
-import traceback
 import base64
 from typing import Any, Callable, Dict, List, Optional
-
-import structlog.contextvars as contextvars
 
 from ..core import logger
 
@@ -334,18 +331,14 @@ def _log_request_end(resp: Response) -> Response:
 
 @flask_hooks.db_listen(identifier="before_cursor_execute")
 def _sql_before_execute(conn, cursor, statement, parameters, context, executemany):
-    """SQL 执行前: 记录开始时间和 SQL 信息"""
+    """SQL 执行前: 记录开始时间"""
     try:
         # 忽略事务语句
         if statement.startswith(SQL_STATE_TUPLE):
             return
 
-        # 在 contextvars 中保存开始时间、SQL 语句和参数
-        contextvars.bind_contextvars(
-            sql_start_time=time.time(),
-            sql_statement=statement,
-            sql_parameters=parameters
-        )
+        # 使用 Flask 的 g 对象存储开始时间
+        g.sql_start_time = time.time()
     except Exception:
         pass
 
@@ -355,7 +348,7 @@ def _sql_after_execute(conn, cursor, statement, parameters, context, executemany
     """SQL 执行后: 计算耗时并记录日志"""
     try:
         # 获取开始时间
-        sql_start_time = contextvars.get_contextvars().get("sql_start_time")
+        sql_start_time = getattr(g, 'sql_start_time', None)
 
         # 忽略事务语句或没有开始时间的情况
         if statement.startswith(SQL_STATE_TUPLE) or not sql_start_time:
@@ -374,7 +367,7 @@ def _sql_after_execute(conn, cursor, statement, parameters, context, executemany
                 statement_type = sql_type
                 break
 
-        # 记录结构化日志
+        # 记录结构化日志（只使用 db 字段，符合 DatabaseModel）
         log_level = "warning" if duration_ms > 1000 else "info"  # 超过1秒警告
         log_method = getattr(logger, log_level)
 
@@ -388,40 +381,33 @@ def _sql_after_execute(conn, cursor, statement, parameters, context, executemany
                 "status": "success",
                 "duration": duration_ms / 1000,  # 转换为秒
                 "row_count": cursor.rowcount if hasattr(cursor, 'rowcount') else None
-            },
-            custom={
-                "parameters": parameters,
-                "duration_ms": round(duration_ms, 2),
             }
         )
     except Exception:
         pass
     finally:
-        # 清理 contextvars
-        contextvars.unbind_contextvars(
-            "sql_start_time", "sql_statement", "sql_parameters")
+        # 清理 g 对象中的 SQL 临时数据
+        if hasattr(g, 'sql_start_time'):
+            delattr(g, 'sql_start_time')
 
 
 @flask_hooks.db_listen(identifier="handle_error")
 def _sql_handle_error(exception_context):
     """SQL 执行错误: 记录失败的查询"""
     try:
-        # 获取保存的 SQL 信息
-        ctx = contextvars.get_contextvars()
-        sql_start_time = ctx.get("sql_start_time")
-        sql_statement = ctx.get("sql_statement")
-        sql_parameters = ctx.get("sql_parameters")
-
-        # 如果没有保存的信息,可能是事务语句,直接返回
-        if not sql_statement:
+        # 从 exception_context 获取 SQL 信息
+        statement = exception_context.statement
+        if not statement or statement.startswith(SQL_STATE_TUPLE):
             return
 
+        # 获取开始时间
+        sql_start_time = getattr(g, 'sql_start_time', None)
+
         # 计算耗时
-        duration_ms = (time.time() - sql_start_time) * \
-            1000 if sql_start_time else 0
+        duration_ms = (time.time() - sql_start_time) * 1000 if sql_start_time else 0
 
         # 清理 SQL 语句
-        sql_str = sql_statement.replace("\\n", " ").replace("\n", " ").strip()
+        sql_str = statement.replace("\\n", " ").replace("\n", " ").strip()
 
         # 推断 SQL 类型
         statement_type = None
@@ -430,7 +416,7 @@ def _sql_handle_error(exception_context):
                 statement_type = sql_type
                 break
 
-        # 记录错误日志
+        # 记录错误日志（只使用 db 字段，符合 DatabaseModel）
         logger.error(
             f"SQL 执行失败: {statement_type or 'UNKNOWN'}",
             event=f"database-{statement_type}-error",
@@ -446,9 +432,9 @@ def _sql_handle_error(exception_context):
     except Exception:
         pass
     finally:
-        # 清理 contextvars
-        contextvars.unbind_contextvars(
-            "sql_start_time", "sql_statement", "sql_parameters")
+        # 清理 g 对象中的 SQL 临时数据
+        if hasattr(g, 'sql_start_time'):
+            delattr(g, 'sql_start_time')
 
 
 @flask_hooks.teardown_request
