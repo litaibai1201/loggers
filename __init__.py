@@ -22,6 +22,7 @@ from .core import (
 from .core.logger import get_queue_handler_status
 from .utils import (
     LogExecutionTime,
+    AutoLog,
     flask_hooks,
     FlaskHooksRegister
 )
@@ -33,6 +34,7 @@ __all__ = [
     "logger",
     "get_queue_handler_status",
     "LogExecutionTime",
+    "AutoLog",
     "LogModel",
     "ServiceModel",
     "TraceModel",
