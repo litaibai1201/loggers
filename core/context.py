@@ -151,12 +151,15 @@ class LogContext:
             use_gzip: 是否压缩备份文件
         """
         import logging
+        import structlog
         from .handlers import OrganizedFileHandler
+        from .logger import PrettyRenderer
 
         # 从配置获取目录设置
         config_log_dir = LOGGING_CONFIG.get('log_dir', 'logs')
         archive_subdir = LOGGING_CONFIG.get('archive_subdir', 'archive')
         lock_subdir = LOGGING_CONFIG.get('lock_subdir', '.locks')
+        environment = LOGGING_CONFIG.get('environment', 'prd')
 
         # 计算归档和锁文件目录路径
         archive_dir = os.path.join(config_log_dir, archive_subdir)
@@ -189,8 +192,26 @@ class LogContext:
             lock_dir=lock_dir,
         )
 
-        # 创建格式化器
-        formatter = logging.Formatter('%(message)s')
+        # 根据环境创建格式化器
+        pre_chain = [
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+        ]
+
+        if environment == 'dev':
+            # 开发环境：美化格式
+            formatter = structlog.stdlib.ProcessorFormatter(
+                processor=PrettyRenderer(colors=False),
+                foreign_pre_chain=pre_chain,
+            )
+        else:
+            # 生产环境：JSON 格式
+            formatter = structlog.stdlib.ProcessorFormatter(
+                processor=structlog.processors.JSONRenderer(ensure_ascii=False),
+                foreign_pre_chain=pre_chain,
+            )
+
         file_handler.setFormatter(formatter)
         file_handler.setLevel(logging.DEBUG)
 
@@ -221,10 +242,8 @@ class LogContext:
                 archive_dir=archive_dir,
                 lock_dir=lock_dir,
             )
-            error_formatter = logging.Formatter(
-                '[%(asctime)s][%(filename)s][%(lineno)s][%(levelname)s][%(thread)d] - %(message)s'
-            )
-            error_handler.setFormatter(error_formatter)
+            # error handler 也使用相同的格式化器
+            error_handler.setFormatter(formatter)
             error_handler.setLevel(logging.ERROR)
             std_logger.addHandler(error_handler)
 

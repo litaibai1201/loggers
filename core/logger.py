@@ -57,6 +57,111 @@ class LoggerConfig:
         return event_dict
 
 
+class PrettyRenderer:
+    """美化日志渲染器 - 用于开发环境的可读性输出
+
+    输出格式示例:
+        2026-02-05T09:50:26Z [info] 函数执行完成: fast_operation
+            category: performance
+            event: performance_metric
+            custom:
+                function: fast_operation
+                duration: 0.201
+            trace:
+                id: e93e9460...
+    """
+
+    # 核心字段（按顺序显示在第一行之后）
+    CORE_FIELDS = ['category', 'event', 'client_ip']
+    # 需要展开显示的嵌套字段
+    NESTED_FIELDS = ['custom', 'req', 'resp', 'db', 'error', 'service', 'trace', 'transaction']
+    # 跳过的字段（已在第一行显示或不需要显示）
+    SKIP_FIELDS = ['message', 'level', 'timestamp', '_validation_error']
+
+    def __init__(self, colors: bool = False):
+        """
+        Args:
+            colors: 是否使用颜色（终端输出时启用）
+        """
+        self.colors = colors
+        # 颜色代码
+        self.COLORS = {
+            'reset': '\033[0m',
+            'bold': '\033[1m',
+            'dim': '\033[2m',
+            'info': '\033[32m',      # 绿色
+            'warning': '\033[33m',   # 黄色
+            'error': '\033[31m',     # 红色
+            'critical': '\033[35m',  # 紫色
+            'debug': '\033[36m',     # 青色
+            'key': '\033[34m',       # 蓝色
+        } if colors else {k: '' for k in ['reset', 'bold', 'dim', 'info', 'warning', 'error', 'critical', 'debug', 'key']}
+
+    def __call__(self, logger: Any, method_name: str, event_dict: Dict[str, Any]) -> str:
+        """渲染日志为美化格式"""
+        lines = []
+
+        # 第一行：时间戳 [级别] 消息
+        timestamp = event_dict.get('timestamp', '')
+        level = event_dict.get('level', 'info')
+        message = event_dict.get('message', '')
+
+        level_color = self.COLORS.get(level, '')
+        reset = self.COLORS['reset']
+        bold = self.COLORS['bold']
+        dim = self.COLORS['dim']
+        key_color = self.COLORS['key']
+
+        first_line = f"{dim}{timestamp}{reset} {level_color}[{level:8}]{reset} {bold}{message}{reset}"
+        lines.append(first_line)
+
+        # 核心字段
+        for field in self.CORE_FIELDS:
+            if field in event_dict:
+                value = event_dict[field]
+                lines.append(f"    {key_color}{field}{reset}: {value}")
+
+        # 嵌套字段（展开显示）
+        for field in self.NESTED_FIELDS:
+            if field in event_dict and event_dict[field]:
+                value = event_dict[field]
+                lines.append(f"    {key_color}{field}{reset}:")
+                if isinstance(value, dict):
+                    for k, v in value.items():
+                        formatted_value = self._format_value(v)
+                        lines.append(f"        {k}: {formatted_value}")
+                else:
+                    lines.append(f"        {value}")
+
+        # 其他字段
+        for field, value in event_dict.items():
+            if field not in self.CORE_FIELDS and field not in self.NESTED_FIELDS and field not in self.SKIP_FIELDS:
+                if isinstance(value, dict):
+                    lines.append(f"    {key_color}{field}{reset}:")
+                    for k, v in value.items():
+                        formatted_value = self._format_value(v)
+                        lines.append(f"        {k}: {formatted_value}")
+                else:
+                    lines.append(f"    {key_color}{field}{reset}: {value}")
+
+        return '\n'.join(lines)
+
+    def _format_value(self, value: Any) -> str:
+        """格式化值，处理多行内容"""
+        if isinstance(value, str):
+            # 处理多行字符串（如 SQL、traceback）
+            if '\n' in value:
+                lines = value.split('\n')
+                if len(lines) > 1:
+                    # 多行内容，每行缩进
+                    formatted_lines = [lines[0]]
+                    for line in lines[1:]:
+                        formatted_lines.append(f"            {line}")
+                    return '\n'.join(formatted_lines)
+            return value
+        return str(value)
+
+
 def configure_logger(use_queue_handler: Optional[bool] = None):
     """初始化日志系统
 
@@ -105,20 +210,37 @@ def configure_logger(use_queue_handler: Optional[bool] = None):
     if use_queue_handler:
         _setup_queue_handler()
 
-    # 配置 structlog（使用原生 contextvars 支持）
+    # 获取环境配置
+    environment = LOGGING_CONFIG.get('environment', 'prd')
+
+    # 预处理器（不包含最终渲染器）
+    # 这些处理器会在传递给 stdlib logger 之前运行
+    pre_chain = [
+        structlog.contextvars.merge_contextvars,
+        LoggerConfig.validate_log_structure,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
+
+    # 配置 structlog
+    # 注意：不在这里添加最终渲染器，让 ProcessorFormatter 处理
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,  # 🔥 自动合并 contextvars
-            LoggerConfig.validate_log_structure,
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.JSONRenderer(ensure_ascii=False),
+        processors=pre_chain + [
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
-        context_class=dict,  # 使用 dict 作为上下文存储
+        context_class=dict,
     )
+
+    # 根据环境设置文件 formatter
+    is_dev = environment == 'dev'
+    _setup_file_formatters(pre_chain, use_pretty=is_dev)
+
+    # 开发环境：额外添加控制台输出（带颜色的美化格式）
+    if is_dev:
+        _setup_console_handler(pre_chain)
 
 
 def _prepare_logging_config() -> Dict[str, Any]:
@@ -191,6 +313,71 @@ def _ensure_log_directories():
             file_dir = os.path.dirname(log_file)
             if file_dir and not os.path.exists(file_dir):
                 os.makedirs(file_dir, exist_ok=True)
+
+
+def _setup_file_formatters(pre_chain: list, use_pretty: bool = False):
+    """为文件 handler 设置 ProcessorFormatter
+
+    Args:
+        pre_chain: 预处理器链
+        use_pretty: 是否使用美化格式（开发环境）
+    """
+    if use_pretty:
+        # 开发环境：美化格式（无颜色，适合文件）
+        formatter = structlog.stdlib.ProcessorFormatter(
+            processor=PrettyRenderer(colors=False),
+            foreign_pre_chain=pre_chain,
+        )
+    else:
+        # 生产环境：JSON 格式
+        formatter = structlog.stdlib.ProcessorFormatter(
+            processor=structlog.processors.JSONRenderer(ensure_ascii=False),
+            foreign_pre_chain=pre_chain,
+        )
+
+    # 获取已配置的 loggers，为它们的文件 handler 设置 formatter
+    configured_loggers = LOGGING_CONFIG.get('loggers', {})
+
+    for logger_name in configured_loggers.keys():
+        std_logger = logging.getLogger(logger_name)
+        for handler in std_logger.handlers:
+            # 只为文件 handler 设置 formatter
+            if hasattr(handler, 'baseFilename'):
+                handler.setFormatter(formatter)
+
+
+def _setup_console_handler(pre_chain: list):
+    """为开发环境设置控制台输出 handler（美化格式）
+
+    Args:
+        pre_chain: 预处理器链
+
+    开发环境下，除了写入文件，还会在控制台输出美化的日志，
+    方便本地调试和阅读。
+    """
+    # 创建美化格式的 formatter（带颜色）
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        processor=PrettyRenderer(colors=True),
+        foreign_pre_chain=pre_chain,
+    )
+
+    # 获取已配置的 loggers
+    configured_loggers = LOGGING_CONFIG.get('loggers', {})
+
+    for logger_name in configured_loggers.keys():
+        std_logger = logging.getLogger(logger_name)
+
+        # 检查是否已有 StreamHandler（避免重复添加）
+        has_console = any(
+            isinstance(h, logging.StreamHandler) and h.stream == sys.stderr
+            for h in std_logger.handlers
+        )
+
+        if not has_console:
+            console_handler = logging.StreamHandler(sys.stderr)
+            console_handler.setLevel(logging.DEBUG)
+            console_handler.setFormatter(console_formatter)
+            std_logger.addHandler(console_handler)
 
 
 def _is_asyncio_environment() -> bool:
