@@ -1,0 +1,22 @@
+# Loggers 依赖包
+# 使用命令安装: pip install -r requirements.txt
+
+# ============ 核心依赖 ============
+
+# 结构化日志
+structlog>=23.1.0
+
+# 数据验证模型
+pydantic>=2.0.0
+
+# YAML 配置解析
+PyYAML>=6.0
+
+# 线程安全的日志文件轮转处理器
+concurrent-log-handler>=0.9.20
+
+# ============ 可选依赖 (Flask 集成) ============
+# 如需使用 flask_hooks 功能，请取消注释以下依赖
+# Flask>=2.0.0
+# Flask-SQLAlchemy>=3.0.0
+# SQLAlchemy>=2.0.0
