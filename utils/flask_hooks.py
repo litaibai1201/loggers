@@ -20,6 +20,7 @@
 import json
 import time
 import base64
+import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core import logger
@@ -221,7 +222,7 @@ def _log_request_start():
     try:
         # 记录开始时间
         g.start_time = time.time()
-        g.request_id = str(int(g.start_time * 1000))
+        g.request_id = request.headers.get('X-Request-ID') or str(uuid.uuid4())
         g.remote_addr = request.remote_addr
         g.root_url = request.root_url
 
@@ -326,6 +327,8 @@ def _log_request_end(resp: Response) -> Response:
         pass
     # 将 trace_id 添加到响应头，方便前端追踪
     resp.headers["X-Trace-Id"] = logger.get_trace_id()
+    resp.headers['X-Request-ID'] = g.get('request_id', 'unknown')
+    resp.headers['X-Response-Time'] = f"{duration_ms}ms"
     return resp
 
 
