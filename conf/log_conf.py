@@ -30,13 +30,35 @@ def _load_yaml_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _get_environment(yaml_default: str = 'dev') -> str:
+    """获取运行环境配置
+
+    优先级: APP_ENV > FLASK_ENV > YAML 配置
+    自动映射: development -> dev, production -> prd
+    """
+    env = os.environ.get('APP_ENV') or os.environ.get('FLASK_ENV')
+    if env:
+        # 统一映射 Flask 风格到简写
+        env_mapping = {'development': 'dev', 'production': 'prd'}
+        return env_mapping.get(env.lower(), env.lower())
+    return yaml_default
+
+
+def _get_service_name(yaml_default: str = 'DEFAULT_SERVICE') -> str:
+    """获取服务名称配置
+
+    优先级: APP_SERVICE_NAME > YAML 配置
+    """
+    return os.environ.get('APP_SERVICE_NAME', yaml_default)
+
+
 def _build_logging_config(yaml_config: Dict[str, Any]) -> Dict[str, Any]:
     """将 YAML 配置转换为 logging.config.dictConfig 格式"""
 
-    # 基础配置
+    # 基础配置（环境变量优先，YAML 作为默认值）
     config = {
-        'service_name': yaml_config.get('service_name', 'DEFAULT_SERVICE'),
-        'environment': yaml_config.get('environment', 'dev'),
+        'service_name': _get_service_name(yaml_config.get('service_name', 'DEFAULT_SERVICE')),
+        'environment': _get_environment(yaml_config.get('environment', 'dev')),
         'use_queue_handler': yaml_config.get('use_queue_handler', False),
         'queue_size': yaml_config.get('queue_size', -1),
         'log_dir': yaml_config.get('log_dir', 'logs'),

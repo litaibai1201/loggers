@@ -1,8 +1,13 @@
 # 日志系统配置文件
+#
+# 注意：以下配置支持环境变量覆盖（环境变量优先）
+#   - service_name: 可通过 APP_SERVICE_NAME 环境变量覆盖
+#   - environment:  可通过 APP_ENV 或 FLASK_ENV 环境变量覆盖
+#                   自动映射: development -> dev, production -> prd
 
-# 服务配置
+# 服务配置（作为默认值，环境变量优先）
 service_name: "AIML_DATASET_SERVICE"
-environment: "prd"  # dev, test, prd
+environment: "prd"  # dev, prd
 
 # 队列处理器配置
 # true: 启用非阻塞日志记录（推荐用于 FastAPI/AsyncIO/高并发应用）
