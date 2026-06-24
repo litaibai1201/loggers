@@ -2,7 +2,7 @@
 """
 @文件: decorators.py
 @说明: 通用日志装饰器 - 用于性能监控和自动日志记录
-@时间: 2024
+@时间: 2025-09-03
 """
 import functools
 import inspect

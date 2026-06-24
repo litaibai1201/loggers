@@ -2,7 +2,7 @@
 """
 @文件: models.py
 @说明: 日志数据模型定义
-@时间: 2024
+@时间: 2025-09-03
 """
 from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, ConfigDict

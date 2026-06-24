@@ -2,7 +2,7 @@
 """
 @文件: context.py
 @说明: 日志上下文管理器
-@时间: 2024
+@时间: 2025-09-03
 """
 from typing import Any, Dict, Literal, Optional
 import structlog
@@ -401,6 +401,7 @@ class LogContext:
             **kwargs: 其他额外字段
         """
         # 只传递非 None 的参数
+        formatted_error = self._format_error(error)
         log_kwargs = {
             k: v for k, v in {
                 "event": event,
@@ -410,7 +411,7 @@ class LogContext:
                 "resp": resp,
                 "db": db,
                 "custom": custom,
-                "error": error
+                "error": formatted_error
             }.items() if v is not None
         }
         log_kwargs.update(kwargs)
@@ -452,6 +453,7 @@ class LogContext:
             **kwargs: 其他额外字段
         """
         # 只传递非 None 的参数
+        formatted_error = self._format_error(error)
         log_kwargs = {
             k: v for k, v in {
                 "event": event,
@@ -461,7 +463,7 @@ class LogContext:
                 "resp": resp,
                 "db": db,
                 "custom": custom,
-                "error": error
+                "error": formatted_error,
             }.items() if v is not None
         }
         log_kwargs.update(kwargs)

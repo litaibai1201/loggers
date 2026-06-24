@@ -2,7 +2,7 @@
 """
 @文件: log_conf.py
 @说明: 日志系统配置 - 从 YAML 配置文件加载
-@时间: 2024
+@时间: 2025-09-03
 """
 import os
 from typing import Any, Dict

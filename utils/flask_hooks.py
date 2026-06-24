@@ -2,7 +2,7 @@
 """
 @文件: flask_hooks.py
 @说明: Flask 应用钩子 - 自动记录 HTTP 请求/响应和 SQL 查询日志
-@时间: 2024
+@时间: 2025-09-03
 
 使用方法:
     from loggers.integrations.flask_hooks import flask_hooks
@@ -254,11 +254,12 @@ def _log_request_start():
 @flask_hooks.after_request
 def _log_request_end(resp: Response) -> Response:
     """钩子: 记录响应信息和请求耗时"""
+    duration_ms = 0
     try:
         if request.method == "OPTIONS":
             return resp
         # 计算请求耗时
-        duration_ms = round((time.time() - g.start_time) * 1000, 2)
+        duration_ms = round((time.time() - getattr(g, 'start_time', time.time())) * 1000, 2)
 
         # 解析响应体
         response_body = None
